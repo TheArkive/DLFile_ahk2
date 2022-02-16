@@ -129,6 +129,7 @@ class DLFile {
                 bps_arr.Push(this.bytes - lastBytes)
                 this.bps := this._get_avg(bps_arr)
                 this.perc := Round(this.bytes/this.size*100)
+                lastBytes := this.bytes
                 cb(this)
             }
         }
