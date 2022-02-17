@@ -1,19 +1,20 @@
 ; ===================================================================================
 ; Example
 ; ===================================================================================
+#INCLUDE D:\UserData\AHK\_INCLUDE\_LibraryV2\_JXON.ahk
 
 url:="https://dl.google.com/android/repository/commandlinetools-win-8092744_latest.zip"
 dest := A_Desktop "\commandlinetools-win-8092744_latest.zip"
 
 DL := DLFile(url,dest,callback)
-DL.del_on_cancel := true
+;;;;;; DL.del_on_cancel := true ; enable/uncommen this to delete partial files after cancel
 
 g := Gui("+AlwaysOnTop -MaximizeBox -MinimizeBox","Download Progress")
 g.OnEvent("close",(*)=>ExitApp())
 g.OnEvent("escape",(*)=>ExitApp())
 g.SetFont(,"Consolas")
 g.Add("Text","w300 vText1 -Wrap")
-g.Add("Progress","w300 vProg")
+g.Add("Progress","w300 vProg",DL.CheckPartial())
 g.Add("Text","w300 vText2 -Wrap")
 g.Add("Button","x255 w75 vCancel","Cancel").OnEvent("click",events)
 g.Show()
@@ -70,6 +71,19 @@ If DL.perc = 100
 ;       - obj.Start() = Starts the download.  You can set del_on_cancel before
 ;                       starting the download.
 ;
+;       - obj.CheckLength() = Manually check the length of the requested URL.
+;                             It is not necessary to call this manually for the
+;                             sake of downloading the file.  This is done internally.
+;                             This is only useful if you wish to query the file size
+;                             for some other purpose, ie. to display the file size
+;                             in a GUI control.
+;
+;       - obj.CheckPartial(bytes:=false) = Check for a partial download and automatically
+;                                          calculate and return the percent complete.
+;                                          Optionally specify TRUE for the 'bytes' param
+;                                          and get the current size in bytes of the
+;                                          partial file.
+;
 ;   WARNING:
 ;
 ;       Do not destroy the object during a download.  If you do, the handles will
@@ -86,23 +100,42 @@ If DL.perc = 100
 class DLFile {
     cancel := false, del_on_cancel := false
     size := 0, perc := 0, bytes := 0, bps := 0, file := 0
+    resume := false
     
-    __New(url, dest, cb:="") => (this.url := url, this.dest := dest, this.cb := cb)
+    __New(url, dest, cb:="") {
+        this.url := url, this.dest := dest, this.cb := cb
+        this._SplitUrl(this.url,&protocol,&server,&port,&_dir_file,&_file)
+        this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
+    }
     
     Start() {
-        cb := this.cb
-        this._SplitUrl(this.url,&protocol,&server,&port,&_dir_file,&_file)
-        this.file := _file
-        
+        cb := this.cb, temp_file := this.dest ".temp"
         this.hSession := this.Open()
-        this.hConnect := this.Connect(this.hSession, server, port)
-        this.hRequest := this.OpenRequest(this.hConnect,"GET",_dir_file)
+        this.hConnect := this.Connect(this.hSession, this.server, this.port)
         
-        this.SendRequest(this.hRequest)
-        this.ReceiveResponse(this.hRequest)
+        If FileExist(temp_file) { ; check for 'dest.temp' file
+            length := this.CheckLength(false) ; do not call this.Abort() on CheckLength()
+            this.hRequest := this.OpenRequest(this.hConnect,"GET",this.dir_file)
+            file_buf := FileOpen(temp_file,"a")
+            this.SendRequest(this.hRequest,"Range: bytes=-" (length-file_buf.Length)) ; specify range to download
+            this.ReceiveResponse(this.hRequest)
+            headers := this.QueryHeaders(this.hRequest), rsp := headers["response-code"]
+            
+            If (rsp = 206 || rsp = 200) { ; if request is valid, set size and bytes already downloaded
+                this.size := RegExReplace(headers["content-range"],"bytes \d+\-\d+/(\d+)","$1")
+                this.bytes := file_buf.Length, this.resume := true
+            } Else this.CloseHandle(this.hRequest) ; abort hRequest and recreate below
+        }
         
-        this.size := this.QueryHeaders(this.hRequest,"content-length")
-        file_buf := FileOpen(this.dest ".temp","rw")
+        If !this.resume { ; recreate request to download the full file
+            this.hRequest := this.OpenRequest(this.hConnect,"GET",this.dir_file)
+            r1 := this.SendRequest(this.hRequest)
+            r2 := this.ReceiveResponse(this.hRequest)
+            headers := this.QueryHeaders(this.hRequest)
+            file_buf := FileOpen(temp_file,"rw")
+            this.size := headers["content-length"]
+        }
+        
         lastBytes := 0, bps_arr := []
         SetTimer timer, 250
         
@@ -113,15 +146,14 @@ class DLFile {
             this.bytes += d_size
         }
         SetTimer timer, 0
-        If HasMethod(cb)
-        && !this.cancel             ; ensure finished stats on completion
+        If HasMethod(cb) && !this.cancel ; ensure finished stats on completion
             this.bytes:=this.size, this.bps:=0, this.perc:=100
         
         file_buf.Close()
         If !this.cancel             ; remove ".temp" on complete
-            FileMove(this.dest ".temp",this.dest)
+            FileMove(temp_file,this.dest)
         Else If this.del_on_cancel  ; delete partial download if enabled
-            FileDelete(this.dest ".temp")
+            FileDelete(temp_file)
         this.Abort()                ; cleanup handles
         
         timer() {
@@ -133,6 +165,24 @@ class DLFile {
                 cb(this)
             }
         }
+    }
+    
+    CheckPartial(bytes:=false) {
+        length := this.CheckLength(true), result := 0
+        If FileExist(this.dest ".temp") {
+            f := FileOpen(this.dest ".temp","r"), size := f.Length, f.Close()
+            result := bytes ? size : Round(size/length)
+        } return result
+    }
+    
+    CheckLength(abort:=true) {
+        this.hSession := this.Open()
+        this.hConnect := this.Connect(this.hSession, this.server, this.port)
+        this.hRequest := this.OpenRequest(this.hConnect,"HEAD",this.dir_file)
+        this.SendRequest(this.hRequest), this.ReceiveResponse(this.hRequest)
+        length := this.QueryHeaders(this.hRequest,"content-length")
+        this.CloseHandle(this.hRequest), this.hRequest := 0, (abort ? this.Abort() : "")
+        return length
     }
     
     _get_avg(bps_arr, result:=0) {
@@ -150,52 +200,14 @@ class DLFile {
         _file := RegExReplace(url,".+?/([^/]+)$","$1")
     }
     
-    _define_headers() { ; this can probably be trimmed
-        headers := Map()
-        headers.CaseSense := false
-        headers.Set("mime-version",0,"content-type",1,"content-transfer-encoding",2,"content-id",3,"content-description",4,"content-length",5
-            ,"content-language",6,"allow",7,"public",8,"date",9,"expires",10,"last-modified",11,"message-id",12,"uri",13,"derived-from",14,"cost",15
-            ,"link",16,"pragma",17,"version",18,"status-code",19,"status-text",20,"raw-headers",21,"raw-headers-crlf",22,"connection",23,"accept",24
-            ,"accept-charset",25,"accept-encoding",26,"accept-language",27,"authorization",28,"content-encoding",29,"forwarded",30,"from",31
-            ,"if-modified-since",32,"location",33,"orig-uri",34,"referer",35,"retry-after",36,"server",37,"title",38,"user-agent",39
-            ,"www-authenticate",40,"proxy-authenticate",41,"accept-ranges",42,"set-cookie",43,"cookie",44,"request-method",45,"refresh",46
-            ,"content-disposition",47
-            ; HTTP 1.1 headers
-            ,"age",48,"cache-control",49,"content-base",50,"content-location",51,"content-md5",52,"content-range",53,"etag",54,"host",55,"if-match",56
-            ,"if-none-match",57,"if-range",58,"if-unmodified-since",59,"max-forwards",60,"proxy-authorization",61,"range",62,"transfer-encoding",63
-            ,"upgrade",64,"vary",65,"via",66,"warning",67,"expect",68,"proxy-connection",69,"unless-modified-since",70
-            ,"proxy-support",75,"authentication-info",76,"passport-urls",77,"passport-config",78,"max",78
-            ,"custom",65535)
-        return headers
-    }
-    
-    callback(hInternet, context, status, ptr, size) { ; currently not used
-        If (status = 0x20) { ; request sent
-            
-        } Else if (status = 0x40) { ; receiving response
-        
-        } Else If (status = 0x80) { ; response received
-            bytesRec := NumGet(ptr,"UInt")        
-        } Else If (status = 0x400000) { ; send request complete
-            
-        } Else If (status = 0x10000) { ; check for error flags ; this.cb_stat_flags
-        
-        } Else if (status = 0x20000) { ; headers available
-            
-        } Else If (status = 0x40000) { ; data available
-            size := NumGet(ptr,"UInt")
-            
-        } Else If (status = 0x80000) { ; read complete
-            bytesRead := NumGet(ptr,"UInt")
-        }
-    }
-    
     __Delete() => ((this.hRequest) ? this.Abort() : "")
     
     ; ==============================================================================
-    ; prxType := 1          ; WINHTTP_ACCESS_TYPE_NO_PROXY
-    ; dwFlags (DWORD)
+    ; prxType := 1
+    ; WINHTTP_ACCESS_TYPE_DEFAULT_PROXY    0 ; WINHTTP_ACCESS_TYPE_NAMED_PROXY      3
+    ; WINHTTP_ACCESS_TYPE_NO_PROXY         1 ; WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY  4
     ;
+    ; dwFlags (DWORD) - combine zero or more
     ; WINHTTP_FLAG_ASYNC              0x10000000  // this session is asynchronous (where supported)
     ; WINHTTP_FLAG_SECURE_DEFAULTS    0x30000000  // note that this flag also forces async
     Open(userAgent:="WinHTTP/5.0", prxType:=1, prxName:=0, prxBypass:=0, dwFlags:=0)
@@ -237,55 +249,41 @@ class DLFile {
     ; ==============================================================================
     ; exH = extra headers (string)
     ; exD = extra data (buffer)
+    ; exD2 = additional data size to be sent with WinHttpWriteData()
     ; ID  = context ID (user defined DWORD)
-    SendRequest(hRequest, exH:=0, exD:=0, ID:=0)
+    SendRequest(hRequest, exH:=0, exD:=0, exD2:=0, ID:=0)
     => DllCall("Winhttp\WinHttpSendRequest","UPtr",hRequest
                                            ,(!exH?"UPtr":"Str"),exH
-                                           ,"UInt",(exH_sz:=(exH?StrPut(exH):0))
+                                           ,"Int",(exH?-1:0)
                                            ,"UPtr",(exD?exD.ptr:0)
                                            ,"UInt",(exD_sz:=(exD?exD.size:0))
-                                           ,"UInt",exH_sz+exD_sz
+                                           ,"UInt",exD_sz+exD2
                                            ,"UPtr",ID)
     
     ; ==============================================================================
     ReceiveResponse(hRequest) => DllCall("Winhttp\WinHttpReceiveResponse","UPtr",hRequest,"UPtr",0)
     
     ; ==============================================================================
-    QueryHeaders(hRequest,headers:="") { ; this can probably be trimmed
-        Static _headers_ := this._define_headers()
-        hdr_list := _make_headers(), headers:=""
+    ; This method pulls- raw-headers-crlf = 22 (all headers) by default.
+    ; Optionally specify a specific header to get only that value.
+    ; Default return value, with no header specified, returns a map() of all headers.
+    ;
+    ; extra values added:   http-version, response-code, response-code-text
+    QueryHeaders(hRequest,header:="") {
+        fnc := "Winhttp\WinHttpQueryHeaders"
+        r1 := DllCall(fnc,"UPtr",hRequest,"UInt",22,"UPtr",0,"UPtr",0,"UInt*",&size:=0,"UPtr",0)
+        buf := Buffer(size,0)
+        r2 := DllCall(fnc,"UPtr",hRequest,"UInt",22,"UPtr",0,"UPtr",buf.ptr,"UInt*",buf.size,"UPtr",0)
+        full_hdrs := StrGet(buf), _map := Map(), _map.CaseSense := false
         
-        For hdr, val in hdr_list {
-            _iHdr := _headers_[hdr] ? _headers_[hdr] : _headers_["custom"]
-            _hdr_typ := ((_iHdr=65535)?"Str":"UPtr")
-            idx:=0, last_idx:=-1, size:=0
-            
-            While (last_idx!=idx) { ; ERROR_WINHTTP_HEADER_NOT_FOUND = 12150
-                r := DllCall("Winhttp\WinHttpQueryHeaders","UPtr",hRequest,"UInt",_iHdr
-                            ,_hdr_typ,((_iHdr=65535)?hdr:0),"UPtr",0,"UInt*",&size,"UPtr",0)
-                
-                If (size) {
-                    buf := Buffer(size,0)
-                    r := DllCall("Winhttp\WinHttpQueryHeaders","UPtr",hRequest,"UInt",_iHdr
-                                ,_hdr_typ,((_iHdr=65535)?StrPtr(hdr):0),"UPtr",buf.ptr,"UInt*",buf.size,"UPtr",0)
-                    return StrGet(buf)
-                }
-                
-                last_idx := idx
-            }
+        Loop Parse full_hdrs, "`n", "`r"
+        {
+            If RegExMatch(A_LoopField,"^HTTP/([\d\.]+) (\d+) (.+)",&m)
+                _map.Set("http-version",m[1],"response-code",m[2],"response-code-text",m[3])
+            Else If (hdr_name:=SubStr(A_LoopField,1,(sep:=InStr(A_LoopField,":"))-1))
+                _map[hdr_name] := SubStr(A_LoopField,sep+1)
         }
-        
-        return headers
-        
-        _make_headers() {
-            _hdr_list := Map(), _hdr_list.CaseSense := false
-            If !headers
-                _hdr_list["raw-headers-crlf"] := 22
-            Else
-                For i, hdr in StrSplit(headers,";"," ")
-                    _hdr_list[hdr] := (_headers_.Has(hdr)) ? _headers_[hdr] : 65535
-            return _hdr_list
-        }
+        return (header && _map.Has(header)) ? _map[header] : _map
     }
     
     QueryDataSize(hRequest) {
@@ -302,11 +300,11 @@ class DLFile {
     CloseHandle(handle) => DllCall("Winhttp\WinHttpCloseHandle","UPtr",handle)
     
     Abort() {
-        If !(this.CloseHandle(this.hRequest))
-            throw Error("Unable to close request handle.",-1)
-        If !(this.CloseHandle(this.hConnect))
+        If this.hRequest && !(this.CloseHandle(this.hRequest))
+                throw Error("Unable to close request handle.",-1)
+        If this.hConnect && !(this.CloseHandle(this.hConnect))
             throw Error("Unable to close connect handle.",-1)
-        If !(this.CloseHandle(this.hSession))
+        If this.hSession && !(this.CloseHandle(this.hSession))
             throw Error("Unable to close session handle.",-1)
         this.hRequest := this.hConnect := this.hSession := 0
     }
@@ -318,4 +316,88 @@ class DLFile {
     ; Loop Parse _in, "`n", "`r"
         ; OutputDebug "AHK: " A_LoopField
 ; }
+
+
+; ====================================================================
+; list of header codes
+; ====================================================================
+; accept = 24
+; accept-charset = 25
+; accept-encoding = 26
+; accept-language = 27
+; accept-ranges = 42
+; age = 48
+; allow = 7
+; authentication-info = 76
+; authorization = 28
+; cache-control = 49
+; connection = 23
+; content-base = 50
+; content-description = 4
+; content-disposition = 47
+; content-encoding = 29
+; content-id = 3
+; content-language = 6
+; content-length = 5
+; content-location = 51
+; content-md5 = 52
+; content-range = 53
+; content-transfer-encoding = 2
+; content-type = 1
+; cookie = 44
+; cost = 15
+; custom = 65535
+; date = 9
+; derived-from = 14
+; etag = 54
+; expect = 68
+; expires = 10
+; forwarded = 30
+; from = 31
+; host = 55
+; if-match = 56
+; if-modified-since = 32
+; if-none-match = 57
+; if-range = 58
+; if-unmodified-since = 59
+; last-modified = 11
+; link = 16
+; location = 33
+; max = 78
+; max-forwards = 60
+; message-id = 12
+; mime-version = 0
+; orig-uri = 34
+; passport-config = 78
+; passport-urls = 77
+; pragma = 17
+; proxy-authenticate = 41
+; proxy-authorization = 61
+; proxy-connection = 69
+; proxy-support = 75
+; public = 8
+; range = 62
+; raw-headers = 21
+; raw-headers-crlf = 22
+; referer = 35
+; refresh = 46
+; request-method = 45
+; retry-after = 36
+; server = 37
+; set-cookie = 43
+; status-code = 19
+; status-text = 20
+; title = 38
+; transfer-encoding = 63
+; unless-modified-since = 70
+; upgrade = 64
+; uri = 13
+; user-agent = 39
+; vary = 65
+; version = 18
+; via = 66
+; warning = 67
+; www-authenticate = 40
+
+
 
