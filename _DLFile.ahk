@@ -1,7 +1,6 @@
 ; ===================================================================================
 ; Example
 ; ===================================================================================
-#INCLUDE D:\UserData\AHK\_INCLUDE\_LibraryV2\_JXON.ahk
 
 url:="https://dl.google.com/android/repository/commandlinetools-win-8092744_latest.zip"
 dest := A_Desktop "\commandlinetools-win-8092744_latest.zip"
