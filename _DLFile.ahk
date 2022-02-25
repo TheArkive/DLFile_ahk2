@@ -6,7 +6,7 @@ url:="https://dl.google.com/android/repository/commandlinetools-win-8092744_late
 dest := A_Desktop "\commandlinetools-win-8092744_latest.zip"
 
 DL := DLFile(url,dest,callback)
-;;;;;; DL.del_on_cancel := true ; enable/uncommen this to delete partial files after cancel
+;;;; DL.del_on_cancel := true ; enable/uncommen this to delete partial files after cancel
 
 g := Gui("+AlwaysOnTop -MaximizeBox -MinimizeBox","Download Progress")
 g.OnEvent("close",(*)=>ExitApp())
@@ -16,6 +16,7 @@ g.Add("Text","w300 vText1 -Wrap")
 g.Add("Progress","w300 vProg",DL.CheckPartial())
 g.Add("Text","w300 vText2 -Wrap")
 g.Add("Button","x255 w75 vCancel","Cancel").OnEvent("click",events)
+g.Add("Button","x255 yp w75 vResume Hidden","Resume").OnEvent("click",events)
 g.Show()
 
 DL.Start()
@@ -24,6 +25,12 @@ events(ctl,info) {
     If (ctl.name = "Cancel") {
         DL.cancel := true
         g["Text2"].Text := "Download Cancelled! / Percent: " DL.perc "% / Exit = ESC"
+        g["Resume"].Visible := true
+        g["Cancel"].Visible := false
+    } Else if (ctl.name = "Resume") {
+        g["Resume"].Visible := false
+        g["Cancel"].Visible := true
+        DL.Start() ; note that execution stops here until download is finished or DL.cancel is set to TRUE.
     }
 }
 
@@ -31,10 +38,11 @@ callback(o:="") {
     g["Text1"].Text := o.file
     g["Text2"].Text := Round(o.bps/1024) " KBps   /   Percent: " o.perc "%"
     g["Prog"].Value := o.perc
+    If o.perc = 100 {
+        g["Text2"].Text := "Download Complete!  Press ESC to exit."
+        g["Cancel"].Enabled := false
+    }
 }
-
-If DL.perc = 100
-    g["Text2"].Text := "Download Complete!  Press ESC to exit."
 
 ; ===================================================================================
 ; USAGE:
@@ -97,9 +105,7 @@ If DL.perc = 100
 ; ===================================================================================
 
 class DLFile {
-    cancel := false, del_on_cancel := false
-    size := 0, perc := 0, bytes := 0, bps := 0, file := 0
-    resume := false
+    del_on_cancel := false
     
     __New(url, dest, cb:="") {
         this.url := url, this.dest := dest, this.cb := cb
@@ -145,8 +151,9 @@ class DLFile {
             this.bytes += d_size
         }
         SetTimer timer, 0
+        
         If HasMethod(cb) && !this.cancel ; ensure finished stats on completion
-            this.bytes:=this.size, this.bps:=0, this.perc:=100
+            this.bytes:=this.size, this.bps:=0, this.perc:=100, cb(this)
         
         file_buf.Close()
         If !this.cancel             ; remove ".temp" on complete
@@ -306,6 +313,7 @@ class DLFile {
         If this.hSession && !(this.CloseHandle(this.hSession))
             throw Error("Unable to close session handle.",-1)
         this.hRequest := this.hConnect := this.hSession := 0
+        this.size := this.perc := this.bytes := this.bps := this.cancel := this.resume := 0
     }
 }
 
