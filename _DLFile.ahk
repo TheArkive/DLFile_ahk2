@@ -67,6 +67,10 @@ callback(o:="") {
 ;       - dest  = specified destination dir/file
 ;       - cb    = the callback function object
 ;
+;   - del_on_cancel
+;
+;       Set this param to TRUE in order to have an incomplete temp file deleted on cancel.
+;
 ;   Object properties:
 ;
 ;       - obj.del_on_cancel = set this to true to clean up a partial download after abort
@@ -107,8 +111,8 @@ callback(o:="") {
 class DLFile {
     del_on_cancel := false
     
-    __New(url, dest, cb:="") {
-        this.url := url, this.dest := dest, this.cb := cb
+    __New(url, dest, cb:="", del_on_cancel:=false) {
+        this.url := url, this.dest := dest, this.cb := cb, this.del_on_cancel := del_on_cancel
         this._SplitUrl(this.url,&protocol,&server,&port,&_dir_file,&_file)
         this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
     }
