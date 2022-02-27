@@ -3,6 +3,24 @@
 ; ===================================================================================
 ; Example
 ; ===================================================================================
+; It is important to note that this class is NOT async.  It is theoretically possible
+; to do some type of multi-thread download, but this is not a true async implementation.
+; Therefore when calling the Start() method, exection will halt in that thread until
+; another thread sets:
+;
+;   obj.cancel := true
+;
+; While it may be theoretically possible to implement multi-thread downloading, or
+; even multiple simultaneous downloads, this is not entirely an ideal way to do it.
+; A true "async" implementation is necessary for this become ideal.
+;
+; The "async" capabilities with the WinHTTP API require "thread safe" execution.  And
+; with AutoHotkey, if I'm not mistaken, this is not supported.  I did try a true async
+; version and managed to consistently fail in a mind-boggling number of different ways.
+; I almost never got the same error twice.
+;
+; If someone wants to school me, please do :-)
+; ===================================================================================
 
 url:="https://dl.google.com/android/repository/commandlinetools-win-8092744_latest.zip"
 dest := A_Desktop "\commandlinetools-win-8092744_latest.zip"
@@ -49,7 +67,7 @@ callback(o:="") {
 ; ===================================================================================
 ; USAGE:
 ;
-;   DLFile(url, dest, callback := "")
+;   DLFile(url, dest, callback := "", del_on_cancel := false)
 ;
 ;   Params:
 ;
@@ -120,7 +138,7 @@ class DLFile {
     }
     
     Start() {
-        cb := this.cb, temp_file := this.dest ".temp"
+        cb := this.cb, temp_file := this.dest ".temp", lastBytes := 0
         this.hSession := this.Open()
         this.hConnect := this.Connect(this.hSession, this.server, this.port)
         
@@ -134,7 +152,7 @@ class DLFile {
             
             If (rsp = 206 || rsp = 200) { ; if request is valid, set size and bytes already downloaded
                 this.size := RegExReplace(headers["content-range"],"bytes \d+\-\d+/(\d+)","$1")
-                this.bytes := file_buf.Length, this.resume := true
+                this.bytes := lastBytes := file_buf.Length, this.resume := true
             } Else this.CloseHandle(this.hRequest) ; abort hRequest and recreate below
         }
         
@@ -147,7 +165,7 @@ class DLFile {
             this.size := headers["content-length"]
         }
         
-        lastBytes := 0, bps_arr := []
+        bps_arr := []
         SetTimer timer, 250
         
         While(d_size := this.QueryDataSize(this.hRequest)) {
