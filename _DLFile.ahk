@@ -22,8 +22,9 @@
 ; If someone wants to school me, please do :-)
 ; ===================================================================================
 
-url:="https://dl.google.com/android/repository/commandlinetools-win-8092744_latest.zip"
-dest := A_Desktop "\commandlinetools-win-8092744_latest.zip"
+url:=["https://dl.google.com/android/repository/commandlinetools-win-8092744_latest.zip"
+     ,"https://dl.google.com/android/repository/commandlinetools-win-7583922_latest.zip"]
+dest := A_Desktop ; on batch, dest must be folder, otherwise, on single file/url input dest should be the file to create.
 
 DL := DLFile(url,dest,callback)
 ;;;; DL.del_on_cancel := true ; enable/uncommen this to delete partial files after cancel
@@ -33,7 +34,7 @@ g.OnEvent("close",(*)=>ExitApp())
 g.OnEvent("escape",(*)=>ExitApp())
 g.SetFont(,"Consolas")
 g.Add("Text","w300 vText1 -Wrap")
-g.Add("Progress","w300 vProg",DL.CheckPartial())
+g.Add("Progress","w300 vProg",0)
 g.Add("Text","w300 vText2 -Wrap")
 g.Add("Button","x255 w75 vCancel","Cancel").OnEvent("click",events)
 g.Add("Button","x255 yp w75 vResume Hidden","Resume").OnEvent("click",events)
@@ -58,10 +59,6 @@ callback(o:="") {
     g["Text1"].Text := o.file
     g["Text2"].Text := Round(o.bps/1024) " KBps   /   Percent: " o.perc "%"
     g["Prog"].Value := o.perc
-    If o.perc = 100 {
-        g["Text2"].Text := "Download Complete!  Press ESC to exit."
-        g["Cancel"].Enabled := false
-    }
 }
 
 ; ===================================================================================
@@ -71,7 +68,10 @@ callback(o:="") {
 ;
 ;   Params:
 ;
-;   - url / dest = self explanitory
+;   - url = a single url string, or an array of URLs
+;
+;   - dest = When url is a single url, this must be a filename (full path) to create.
+;            When url is an array of URLs, then this must be a folder name.
 ;
 ;   - callback = a func object
 ;
@@ -133,12 +133,31 @@ class DLFile {
     
     __New(url, dest, cb:="", del_on_cancel:=false) {
         this.url := url, this.dest := dest, this.cb := cb, this.del_on_cancel := del_on_cancel
-        this._SplitUrl(this.url,&protocol,&server,&port,&_dir_file,&_file)
-        this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
     }
     
     Start() {
-        cb := this.cb, temp_file := this.dest ".temp", lastBytes := 0
+        If !(Type(this.url) = "Array") {
+            this._SplitUrl(this.url,&protocol,&server,&port,&_dir_file,&_file)
+            this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
+            this.StartDL()
+        } Else {
+            If !(InStr(FileExist(this.dest),"D")) {
+                MsgBox "Destination must be a directory when processing a batch."
+                return
+            }
+            While this.url.Length {
+                this._SplitUrl(this.url[1],&protocol,&server,&port,&_dir_file,&_file)
+                this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
+                this.StartDL()
+            }
+        }
+    }
+    
+    StartDL() {
+        cb := this.cb
+        temp_file := (this.url.Length) ? (this.dest "\" this.file ".temp") : (this.dest ".temp")
+        dest_file := (this.url.Length) ? (this.dest "\" this.file) : (this.dest)
+        lastBytes := this.resume := this.bytes := this.cancel := 0
         this.hSession := this.Open()
         this.hConnect := this.Connect(this.hSession, this.server, this.port)
         
@@ -181,10 +200,13 @@ class DLFile {
         
         file_buf.Close()
         If !this.cancel             ; remove ".temp" on complete
-            FileMove(temp_file,this.dest)
+            FileMove(temp_file,dest_file)
         Else If this.del_on_cancel  ; delete partial download if enabled
             FileDelete(temp_file)
         this.Abort()                ; cleanup handles
+        
+        If Type(this.url) = "Array"
+            this.url.RemoveAt(1)
         
         timer() {
             If HasMethod(cb) {
@@ -197,13 +219,13 @@ class DLFile {
         }
     }
     
-    CheckPartial(bytes:=false) {
-        length := this.CheckLength(true), result := 0
-        If FileExist(this.dest ".temp") {
-            f := FileOpen(this.dest ".temp","r"), size := f.Length, f.Close()
-            result := bytes ? size : Round(size/length)
-        } return result
-    }
+    ; CheckPartial(inFile, bytes:=false) {
+        ; length := this.CheckLength(true), result := 0
+        ; If FileExist(inFile ".temp") {
+            ; f := FileOpen(inFile ".temp","r"), size := f.Length, f.Close()
+            ; result := bytes ? size : Round(size/length)
+        ; } return result
+    ; }
     
     CheckLength(abort:=true) {
         this.hSession := this.Open()
