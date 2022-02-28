@@ -132,10 +132,13 @@ class DLFile {
     del_on_cancel := false
     
     __New(url, dest, cb:="", del_on_cancel:=false) {
-        this.url := url, this.dest := dest, this.cb := cb, this.del_on_cancel := del_on_cancel
+        this.url := url, this.dest := dest, this.del_on_cancel := del_on_cancel
+        this.cb := cb
     }
     
     Start() {
+        this.cancel := this.resume := 0
+        
         If !(Type(this.url) = "Array") {
             this._SplitUrl(this.url,&protocol,&server,&port,&_dir_file,&_file)
             this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
@@ -145,19 +148,20 @@ class DLFile {
                 MsgBox "Destination must be a directory when processing a batch."
                 return
             }
-            While this.url.Length {
+            While this.url.Length && !this.cancel {
                 this._SplitUrl(this.url[1],&protocol,&server,&port,&_dir_file,&_file)
                 this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
+                this.size := this.perc := this.bytes := this.bps := this.cancel := this.resume := 0
                 this.StartDL()
             }
         }
     }
     
     StartDL() {
-        cb := this.cb
+        cb := this.cb, lastBytes := 0
         temp_file := (this.url.Length) ? (this.dest "\" this.file ".temp") : (this.dest ".temp")
         dest_file := (this.url.Length) ? (this.dest "\" this.file) : (this.dest)
-        lastBytes := this.resume := this.bytes := this.cancel := 0
+        
         this.hSession := this.Open()
         this.hConnect := this.Connect(this.hSession, this.server, this.port)
         
@@ -195,8 +199,12 @@ class DLFile {
         }
         SetTimer timer, 0
         
-        If HasMethod(cb) && !this.cancel ; ensure finished stats on completion
-            this.bytes:=this.size, this.bps:=0, this.perc:=100, cb(this)
+        If !this.cancel { ; ensure finished stats on completion
+            this.bytes:=this.size, this.bps:=0, this.perc:=100
+            (Type(this.url) = "Array") ? this.url.RemoveAt(1) : ""
+        }
+        If HasMethod(cb)
+            cb(this)
         
         file_buf.Close()
         If !this.cancel             ; remove ".temp" on complete
@@ -204,9 +212,6 @@ class DLFile {
         Else If this.del_on_cancel  ; delete partial download if enabled
             FileDelete(temp_file)
         this.Abort()                ; cleanup handles
-        
-        If Type(this.url) = "Array"
-            this.url.RemoveAt(1)
         
         timer() {
             If HasMethod(cb) {
@@ -359,7 +364,6 @@ class DLFile {
         If this.hSession && !(this.CloseHandle(this.hSession))
             throw Error("Unable to close session handle.",-1)
         this.hRequest := this.hConnect := this.hSession := 0
-        this.size := this.perc := this.bytes := this.bps := this.cancel := this.resume := 0
     }
 }
 
