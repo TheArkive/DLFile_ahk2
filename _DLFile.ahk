@@ -22,8 +22,11 @@
 ; If someone wants to school me, please do :-)
 ; ===================================================================================
 
-url:=["https://dl.google.com/android/repository/commandlinetools-win-8092744_latest.zip"
-     ,"https://dl.google.com/android/repository/commandlinetools-win-7583922_latest.zip"]
+; url:=["https://dl.google.com/android/repository/commandlinetools-win-8092744_latest.zip"
+     ; ,"https://dl.google.com/android/repository/commandlinetools-win-7583922_latest.zip"]
+
+url := "https://dl.google.com/android/repository/commandlinetools-win-8092744_latest.zip"
+
 dest := A_Desktop ; on batch, dest must be folder, otherwise, on single file/url input dest should be the file to create.
 
 DL := DLFile(url,dest,callback)
@@ -44,10 +47,14 @@ DL.Start()
 
 events(ctl,info) {
     If (ctl.name = "Cancel") {
-        DL.cancel := true
-        g["Text2"].Text := "Download Cancelled! / Percent: " DL.perc "% / Exit = ESC"
-        g["Resume"].Visible := true
-        g["Cancel"].Visible := false
+        If ctl.text = "Exit" {
+            ExitApp
+        } Else {
+            DL.cancel := true
+            g["Text2"].Text := "Download Cancelled! / Percent: " DL.perc "% / Exit = ESC"
+            g["Resume"].Visible := true
+            g["Cancel"].Visible := false
+        }
     } Else if (ctl.name = "Resume") {
         g["Resume"].Visible := false
         g["Cancel"].Visible := true
@@ -55,10 +62,13 @@ events(ctl,info) {
     }
 }
 
-callback(o:="") {
+callback(o:="") { ; g is global in this case
     g["Text1"].Text := o.file
     g["Text2"].Text := Round(o.bps/1024) " KBps   /   Percent: " o.perc "%"
     g["Prog"].Value := o.perc
+    
+    If o.perc = 100
+        g["Cancel"].Text := "Exit"
 }
 
 ; ===================================================================================
@@ -70,8 +80,10 @@ callback(o:="") {
 ;
 ;   - url = a single url string, or an array of URLs
 ;
-;   - dest = When url is a single url, this must be a filename (full path) to create.
+;   - dest = When url is a single url, this can be a file name or a folder.
 ;            When url is an array of URLs, then this must be a folder name.
+;            Currently a batch download cannot have dest filenames customized.
+;            This is on the to-do list.
 ;
 ;   - callback = a func object
 ;
@@ -132,35 +144,33 @@ class DLFile {
     del_on_cancel := false
     
     __New(url, dest, cb:="", del_on_cancel:=false) {
-        this.url := url, this.dest := dest, this.del_on_cancel := del_on_cancel
+        this.url := (Type(url)="String") ? [url] : url
+        this.dest := dest, attr:=FileExist(this.dest)
+        
+        If (this.url.Length>1 && !InStr(attr,"D")) {
+            Msgbox("Destination must be a directory when processing a batch.")
+            return
+        }
+        
+        this.del_on_cancel := del_on_cancel
         this.cb := cb
+        this.hRequest := this.bytes := 0
     }
     
     Start() {
-        this.cancel := this.resume := 0
-        
-        If !(Type(this.url) = "Array") {
-            this._SplitUrl(this.url,&protocol,&server,&port,&_dir_file,&_file)
+        this.cancel := this.resume := 0, 
+        While this.url.Length && !this.cancel {
+            this._SplitUrl(this.url[1],&protocol,&server,&port,&_dir_file,&_file)
             this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
+            this.size := this.perc := this.bytes := this.bps := this.cancel := this.resume := 0
             this.StartDL()
-        } Else {
-            If !(InStr(FileExist(this.dest),"D")) {
-                MsgBox "Destination must be a directory when processing a batch."
-                return
-            }
-            While this.url.Length && !this.cancel {
-                this._SplitUrl(this.url[1],&protocol,&server,&port,&_dir_file,&_file)
-                this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
-                this.size := this.perc := this.bytes := this.bps := this.cancel := this.resume := 0
-                this.StartDL()
-            }
         }
     }
     
     StartDL() {
-        cb := this.cb, lastBytes := 0
-        temp_file := (this.url.Length) ? (this.dest "\" this.file ".temp") : (this.dest ".temp")
-        dest_file := (this.url.Length) ? (this.dest "\" this.file) : (this.dest)
+        cb := this.cb, lastBytes := 0, attr:=FileExist(this.dest)
+        temp_file := InStr(attr,"D") ? (this.dest "\" this.file ".temp") : (this.dest ".temp")
+        dest_file := InStr(attr,"D") ? (this.dest "\" this.file) : (this.dest)
         
         this.hSession := this.Open()
         this.hConnect := this.Connect(this.hSession, this.server, this.port)
@@ -198,13 +208,9 @@ class DLFile {
             this.bytes += d_size
         }
         SetTimer timer, 0
+        timer(true) ; final timer call to update display/stats
         
-        If !this.cancel { ; ensure finished stats on completion
-            this.bytes:=this.size, this.bps:=0, this.perc:=100
-            (Type(this.url) = "Array") ? this.url.RemoveAt(1) : ""
-        }
-        If HasMethod(cb)
-            cb(this)
+        (!this.cancel && Type(this.url) = "Array") ? this.url.RemoveAt(1) : "" ; ensure finished stats on completion
         
         file_buf.Close()
         If !this.cancel             ; remove ".temp" on complete
@@ -213,10 +219,10 @@ class DLFile {
             FileDelete(temp_file)
         this.Abort()                ; cleanup handles
         
-        timer() {
+        timer(last:=false) {
             If HasMethod(cb) {
                 bps_arr.Push(this.bytes - lastBytes)
-                this.bps := this._get_avg(bps_arr)
+                this.bps := !last ? this._get_avg(bps_arr) : this.bps
                 this.perc := Round(this.bytes/this.size*100)
                 lastBytes := this.bytes
                 cb(this)
@@ -358,7 +364,7 @@ class DLFile {
     
     Abort() {
         If this.hRequest && !(this.CloseHandle(this.hRequest))
-                throw Error("Unable to close request handle.",-1)
+            throw Error("Unable to close request handle.",-1)
         If this.hConnect && !(this.CloseHandle(this.hConnect))
             throw Error("Unable to close connect handle.",-1)
         If this.hSession && !(this.CloseHandle(this.hSession))
