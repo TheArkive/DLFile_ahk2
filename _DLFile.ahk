@@ -158,7 +158,7 @@ class DLFile {
     }
     
     Start() {
-        this.cancel := this.resume := 0, 
+        this.cancel := this.resume := 0
         While this.url.Length && !this.cancel {
             this._SplitUrl(this.url[1],&protocol,&server,&port,&_dir_file,&_file)
             this.dir_file := _dir_file, this.file := _file, this.server := server, this.port := port
